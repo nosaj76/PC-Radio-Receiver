@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="radio-token" content="__TOKEN__"><title>Nooelec · Radio</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><a class="brand" href="/" aria-label="Nooelec Radio home"><span class="brand-icon">◒</span> nooelec<span class="brand-sub">RADIO</span></a><div class="header-right"><span class="local">LOCAL RECEIVER</span><span class="status" id="status"><i></i>Connecting</span></div></header>
+<main>
+<div class="intro"><div><div class="eyebrow">YOUR WINDOW INTO THE AIRWAVES</div><h1>A little curiosity. A whole spectrum.</h1></div><span class="hardware">RTL-SDR <span> / </span> USB</span></div>
+<div id="error" role="alert" hidden></div>
+<section class="tuner panel" aria-label="Receiver tuning">
+<div class="frequency-section"><div class="label">TUNED FREQUENCY <span id="band">FM BROADCAST</span></div><form id="tuneForm"><input id="frequency" aria-label="Frequency in megahertz" type="number" min="24" max="1750" step="0.001" value="99.500"><span class="mhz">MHz</span><button class="tune-button" type="submit">Tune ↵</button><button id="savePresetQuick" class="save-preset" type="button">☆ Save preset</button></form><div class="tune-nav"><button id="stepDown" aria-label="Tune down">−</button><select id="step" aria-label="Tuning step"><option value="100000">100 kHz step</option><option value="10000">10 kHz step</option><option value="1000">1 kHz step</option><option value="1000000">1 MHz step</option></select><button id="stepUp" aria-label="Tune up">+</button><select id="tuningBand" aria-label="Tuning band"><option value="fm">FM radio · 88–108</option><option value="air">Air band · 118–137</option><option value="vhf">VHF · 30–300</option><option value="uhf">UHF · 300–1750</option><option value="all">Full range · 24–1750</option></select></div><div class="tuning-dial"><input id="tuningSlider" type="range" min="88" max="108" step="0.1" value="99.5" aria-label="Drag to tune frequency in MHz"><div class="dial-labels"><span id="dialMin">88 MHz</span><span id="dialHint">Drag to tune · scroll frequency for fine tuning</span><span id="dialMax">108 MHz</span></div></div></div>
+<div class="receiver-controls"><div class="label">DEMODULATION</div><div class="mode-buttons" role="group" aria-label="Demodulation"><button class="selected" data-mode="WFM">WFM</button><button data-mode="NFM">NFM</button><button data-mode="AM">AM</button></div><div id="modeHelp">Broadcast FM · mono audio</div><button id="power" class="primary">Start receiver</button></div>
+</section>
+<div class="workspace"><div class="visuals">
+<section class="panel spectrum-panel"><div class="panel-heading"><div><span class="live-dot"></span><h2>Live spectrum</h2><span class="caption">1.024 MHz span</span></div><div class="meter"><span>SIGNAL</span><b id="signal">—</b><small>dBFS</small></div></div><div class="spectrum-wrap"><canvas id="spectrum" aria-label="Live radio-frequency spectrum; click to tune"></canvas><div id="emptySpectrum" class="empty">Waiting for receiver samples</div><div class="plot-tag">RELATIVE POWER · dBFS</div></div><div class="frequency-axis" id="frequencyAxis"></div></section>
+<section class="panel waterfall-panel"><div class="panel-heading"><div><h2>Waterfall</h2><span class="caption">Signal history · newest at top</span></div><div class="legend"><span>LOW</span><i></i><span>HIGH</span></div></div><canvas id="waterfall" aria-label="Live signal history waterfall"></canvas><div class="waterfall-footer"><span id="streamInfo">Waiting for hardware</span><span>LIVE IQ DATA</span></div></section>
+</div><aside>
+<section class="panel audio-panel"><div class="panel-heading"><h2>Listening</h2><span id="audioBadge" class="badge">MUTED</span></div><button id="listen" class="listen">♫ &nbsp; Enable audio</button><label class="range-label" for="volume">Volume <output id="volumeValue">45%</output></label><input id="volume" type="range" min="0" max="100" value="45"><div class="divider"></div><label class="range-label" for="gain">RF gain <output id="gainValue">Auto</output></label><select id="gain"><option value="0">Automatic</option><option value="9.9">9.9 dB</option><option value="19.7">19.7 dB</option><option value="28">28.0 dB</option><option value="38.6">38.6 dB</option><option value="49.6">49.6 dB</option></select><label class="range-label" for="squelch">Squelch <output id="squelchValue">−100 dBFS</output></label><input id="squelch" type="range" min="-120" max="-10" step="1" value="-100"><p class="help">Squelch mutes signals below this level. Keep it low when exploring.</p></section>
+<section class="panel bookmarks-panel"><div class="panel-heading"><h2>Presets</h2><button id="save" class="save-preset" type="button">+ Save preset</button></div><div id="bookmarks"></div><div id="bookmarkPager" class="bookmark-pager" hidden><button id="bookmarkPrev" aria-label="Previous saved frequencies">‹</button><span id="bookmarkPage"></span><button id="bookmarkNext" aria-label="Next saved frequencies">›</button></div><div id="bookmarkEmpty" class="bookmark-empty">Tune any channel, then click Save preset.</div></section>
+<section class="quickstart"><span>START EXPLORING</span><h3>Try your local FM station.</h3><p>Attach the antenna, tune between 88–108 MHz, and choose WFM. Strong signals rise above the noise.</p><button id="fmBand" title="Attach the antenna. Tune a local station between 88 and 108 MHz using WFM.">Set up for FM <span>↗</span></button></section>
+</aside></div>
+<footer><span><i></i> Nooelec receiver workspace</span><details><summary>Receiver log</summary><pre id="logs">Connecting…</pre></details><span>24–1750 MHz · tuner dependent</span></footer>
+</main>
+<dialog id="presetDialog" aria-labelledby="presetDialogTitle">
+<form id="presetForm">
+  <div class="preset-dialog-heading"><h2 id="presetDialogTitle">Save channel preset</h2><button id="presetCancel" type="button" aria-label="Close preset dialog">×</button></div>
+  <p id="presetFrequency"></p>
+  <label for="presetName">Preset name <span>(optional)</span></label>
+  <input id="presetName" type="text" maxlength="64" placeholder="e.g. My favorite station" autocomplete="off">
+  <p class="preset-note">Saves this frequency and radio mode for one-click tuning.</p>
+  <button class="primary" type="submit">Save preset</button>
+</form>
+</dialog>
+<div id="presetToast" role="status" aria-live="polite" hidden></div>
+<script id="presetImports" type="application/json">[{"id":"b087969b-46d3-409e-9c5a-7e20d5a0d610","frequency":99300000,"mode":"WFM"}]</script><script src="/app.js"></script></body></html>
