@@ -1,12 +1,23 @@
 class RadioAudio extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.buffer = new Float32Array(32768); this.read = 0; this.write = 0; this.count = 0; this.started = false;
+    this.buffer = new Float32Array(32768);
+    this.maxBuffered = 12000;
+    this.read = 0; this.write = 0; this.count = 0; this.started = false;
     this.port.onmessage = ({data}) => {
       if (data === 'clear') { this.count = 0; this.read = this.write; this.started = false; return; }
-      if (this.count + data.length > 12000) { this.read = this.write; this.count = 0; this.started = false; }
-      for (let i = 0; i < data.length; i++) { this.buffer[this.write] = data[i]; this.write = (this.write + 1) % this.buffer.length; }
-      this.count += data.length;
+      if (!(data instanceof Float32Array)) return;
+      // Fetch chunks have no guaranteed sample count. Keep the most recent
+      // bounded window, including when one message exceeds the whole buffer.
+      const length = Math.min(data.length, this.maxBuffered);
+      const start = data.length - length;
+      const dropped = Math.max(0, this.count + length - this.maxBuffered);
+      this.read = (this.read + dropped) % this.buffer.length;
+      this.count -= dropped;
+      for (let i = start; i < data.length; i++) {
+        this.buffer[this.write] = data[i]; this.write = (this.write + 1) % this.buffer.length;
+      }
+      this.count += length;
     };
   }
   process(inputs, outputs) {

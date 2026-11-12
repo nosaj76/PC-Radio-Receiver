@@ -9,6 +9,7 @@ import queue
 import secrets
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,13 +22,24 @@ ROOT = Path(__file__).resolve().parent
 RATE = 1_024_000
 AUDIO_RATE = 32_000
 BLOCK = 65_536
+TUNING_OFFSET = 128_000
 TOKEN = secrets.token_urlsafe(32)
+DEFAULT_CONFIG = dict(frequency=99_500_000, mode='WFM', gain=0, squelch=-100)
+
+
+def settings_path():
+    """Use writable user configuration independently of the installed source."""
+    override = os.environ.get('NOOELEC_SETTINGS_FILE')
+    if override:
+        return Path(override).expanduser()
+    config_home = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config')))
+    return config_home / 'nooelec-radio' / 'settings.json'
 
 
 class Demodulator:
     def __init__(self, mode):
         self.mode = mode
-        self.mixer = np.exp(2j * np.pi * 128_000 / RATE * np.arange(BLOCK)).astype(np.complex64)
+        self.mixer = np.exp(2j * np.pi * TUNING_OFFSET / RATE * np.arange(BLOCK)).astype(np.complex64)
         self.rf = dsp.butter(8, 100_000 if mode == 'WFM' else (8_000 if mode == 'NFM' else 5_000), fs=RATE, output='sos')
         self.rfzi = np.zeros((len(self.rf), 2), dtype=complex)
         self.af = dsp.butter(6, 14_000 if mode == 'WFM' else 4_000, fs=256_000, output='sos')
@@ -41,12 +53,14 @@ class Demodulator:
 
     def process(self, raw):
         a = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 127.5) / 128
-        iq = (a[::2] + 1j * a[1::2]) * self.mixer
+        iq = a[::2] + 1j * a[1::2]
+        # Display the actual capture band. An FFT after mixing would wrap the
+        # upper RF edge into falsely labelled frequencies at the lower edge.
         chunks = iq.reshape(-1, 2048)
         fft = np.fft.fftshift(np.fft.fft(chunks[::4] * self.window, axis=1), axes=1)
         power = np.mean(np.abs(fft / self.window.sum()) ** 2, axis=0)
         spectrum = 10 * np.log10(np.maximum(power, 1e-12))
-        filtered, self.rfzi = dsp.sosfilt(self.rf, iq, zi=self.rfzi)
+        filtered, self.rfzi = dsp.sosfilt(self.rf, iq * self.mixer, zi=self.rfzi)
         base = filtered[::4]
         level = float(10 * np.log10(max(np.mean(np.abs(base) ** 2), 1e-12)))
         if self.mode == 'AM':
@@ -67,22 +81,33 @@ class Demodulator:
 
 
 class Radio:
-    def __init__(self):
+    def __init__(self, config_path=None):
         self.lock = threading.RLock()
         self.control_lock = threading.Lock()
-        self.config = dict(frequency=99_500_000, mode='WFM', gain=0, squelch=-100)
+        self.config = DEFAULT_CONFIG.copy()
+        self.settings_path = Path(config_path) if config_path is not None else settings_path()
+        self.settings_warning = ''
+        source = self.settings_path
+        # Existing source checkouts keep their last-used settings on migration.
+        # Subsequent changes are always saved to the writable user location.
         try:
-            saved = json.loads((ROOT / 'settings.json').read_text())
-            self.config = self.validate(saved)
-        except (OSError, ValueError, TypeError):
+            if config_path is None and not os.environ.get('NOOELEC_SETTINGS_FILE') and not source.exists():
+                source = ROOT / 'settings.json'
+            saved = json.loads(source.read_text())
+            if not isinstance(saved, dict):
+                raise ValueError('Settings must be an object.')
+            self.config = self.validate({**DEFAULT_CONFIG, **saved})
+        except FileNotFoundError:
             pass
+        except (OSError, ValueError, TypeError):
+            self.settings_warning = f'Could not load valid settings from {source}; using defaults.'
         self.process = None
         self.worker = None
         self.generation = 0
         self.status = 'stopped'
         self.wanted = False
         self.error = ''
-        self.logs = []
+        self.logs = [self.settings_warning] if self.settings_warning else []
         self.level = -120
         self.spectrum = None
         self.sequence = 0
@@ -96,8 +121,9 @@ class Radio:
         out = {}
         limits = {'frequency': (24_000_000, 1_750_000_000), 'gain': (0, 50), 'squelch': (-120, 0)}
         for name, (lo, hi) in limits.items():
-            value = data[name]
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not lo <= value <= hi:
+            value = data.get(name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or (isinstance(value, float) and not math.isfinite(value)) or not lo <= value <= hi):
                 raise ValueError(f'{name} must be between {lo} and {hi}.')
             out[name] = int(value) if name == 'frequency' else value
         if data.get('mode') not in ('WFM', 'NFM', 'AM'):
@@ -109,7 +135,9 @@ class Radio:
         with self.lock:
             return dict(**self.config, status=self.status, error=self.error, level=round(self.level, 1),
                         spectrum=self.spectrum, sequence=self.sequence, sample_time=self.sample_time,
-                        sample_rate=RATE, audio_rate=AUDIO_RATE, logs=self.logs[-8:])
+                        sample_rate=RATE, audio_rate=AUDIO_RATE,
+                        spectrum_center_frequency=self.config['frequency'] + TUNING_OFFSET,
+                        logs=self.logs[-8:])
 
     def stop(self):
         with self.lock:
@@ -134,11 +162,12 @@ class Radio:
         self.stop()
         with self.lock:
             cfg = self.config.copy()
-            self.status, self.error, self.logs = 'starting', '', []
+            self.status, self.error = 'starting', ''
+            self.logs = [self.settings_warning] if self.settings_warning else []
             self.wanted = True
             generation = self.generation
             try:
-                proc = subprocess.Popen(['rtl_sdr', '-f', str(cfg['frequency'] + 128_000), '-s', str(RATE),
+                proc = subprocess.Popen(['rtl_sdr', '-f', str(cfg['frequency'] + TUNING_OFFSET), '-s', str(RATE),
                                          '-g', str(cfg['gain']), '-b', str(BLOCK * 2), '-'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except OSError as exc:
                 self.status, self.error = 'error', str(exc)
@@ -195,9 +224,9 @@ class Radio:
                     self.spectrum = None
                     logs = '\n'.join(self.logs)
                     if 'usb_open error -3' in logs:
-                        self.error = 'Ubuntu is denying USB access. Finish the “Nooelec — Enable Receiver” terminal, then press Start receiver.'
+                        self.error = 'USB access denied. Check receiver udev permissions, reconnect it, then press Start receiver.'
                     elif 'claimed' in logs or 'kernel driver' in logs or 'error -6' in logs:
-                        self.error = 'The receiver is busy. Close other SDR apps and finish the driver setup, then start again.'
+                        self.error = 'The receiver is busy. Close other SDR apps and check whether the DVB kernel driver claimed it, then start again.'
                     elif 'No supported devices' in logs:
                         self.error = 'Receiver disconnected. Connect your Nooelec USB receiver and start again.'
                     else:
@@ -234,16 +263,39 @@ class Radio:
                         continue
 
     def update(self, data):
-        new = self.validate({**self.config, **data})
-        restart = any(new[k] != self.config[k] for k in ('frequency', 'mode', 'gain'))
+        if not isinstance(data, dict):
+            raise ValueError('Settings must be an object.')
+        with self.lock:
+            old = self.config.copy()
+        new = self.validate({**old, **data})
+        restart = any(new[k] != old[k] for k in ('frequency', 'mode', 'gain'))
+        # A failed save must leave both the reported state and live tuning alone.
+        # Otherwise a retry appears unchanged and never retunes the hardware.
+        self.save_settings(new)
         with self.lock:
             active = self.status in ('receiving', 'starting')
             self.config = new
-        tmp = ROOT / 'settings.json.tmp'
-        tmp.write_text(json.dumps(new, indent=2))
-        tmp.replace(ROOT / 'settings.json')
+            self.settings_warning = ''
         if restart and active:
             self.start()
+
+    def save_settings(self, config):
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                             dir=self.settings_path.parent,
+                                             prefix='.settings-', suffix='.tmp', delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(config, handle, indent=2, allow_nan=False)
+                handle.write('\n')
+            temporary.replace(self.settings_path)
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 radio = Radio()
@@ -282,7 +334,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'error': 'Invalid token'}, status=403)
             return self.audio()
         names = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript'),
-                 '/style.css': ('style.css', 'text/css'), '/audio-worklet.js': ('audio-worklet.js', 'text/javascript')}
+                 '/style.css': ('style.css', 'text/css'), '/audio-worklet.js': ('audio-worklet.js', 'text/javascript'),
+                 '/radio-utils.js': ('radio-utils.js', 'text/javascript')}
         if path not in names:
             return self.send({'error': 'Not found'}, status=404)
         name, mime = names[path]
@@ -314,6 +367,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(radio.snapshot())
         except (ValueError, KeyError, TypeError) as exc:
             self.send({'error': str(exc)}, status=400)
+        except OSError as exc:
+            self.send({'error': f'Could not apply receiver command: {exc}'}, status=500)
 
     def audio(self):
         client = queue.Queue(maxsize=8)
@@ -340,6 +395,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--open-browser', action='store_true', help='Open the local interface in your default browser.')
+    args = parser.parse_args()
     server = ThreadingHTTPServer(('127.0.0.1', 8877), Handler)
     server.daemon_threads = True
     atexit.register(radio.stop)
@@ -350,6 +409,9 @@ if __name__ == '__main__':
     radio.start()
     threading.Thread(target=radio.reconnect_monitor, daemon=True).start()
     print('Nooelec Radio is running at http://127.0.0.1:8877', flush=True)
+    if args.open_browser:
+        import webbrowser
+        threading.Thread(target=webbrowser.open, args=('http://127.0.0.1:8877',), daemon=True).start()
     try:
         server.serve_forever()
     finally:
