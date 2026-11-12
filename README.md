@@ -6,28 +6,28 @@ The Python server processes real IQ samples from `rtl_sdr`. The interface uses
 plain HTML, CSS, JavaScript, and an AudioWorklet, with no frontend build step or
 cloud service.
 
-## Is it complete?
+## Status
 
-**The core receiver is implemented, but this is not yet a complete portable
-release.** Tuning, demodulation, audio streaming, visualization, and presets are
-present. Remaining gaps include:
+**The core receiver is implemented and has hardware-free regression coverage.
+Live receiver and browser acceptance testing is still required.** This revision
+fixes spectrum frequency mapping, 12.5 kHz tuning accuracy, settings recovery and
+transactional saving, and oversized browser audio packets. It also includes a
+direct launcher, user-local installer, dependency manifest, optional systemd user
+service, and CI configuration.
 
-- **Installation:** `launch.sh` depends on a user systemd service installed
-  outside the project. The service, desktop entry, and USB setup files are not
-  bundled. Direct startup works without the desktop integration.
-- **Dependencies:** no dependency manifest, lockfile, or automated installer.
-- **Error handling:** an incomplete `settings.json` object such as `{}` causes
-  a startup `KeyError`. Settings-file write failures also lack a structured API
-  error response.
-- **Verification:** no committed browser, HTTP integration, or physical receiver
-  tests, and no CI configuration.
-- **Distribution:** no license file is included.
+Qualification on November 12, 2026: **24 Python tests and 9 Node tests pass** in
+the local review environment, along with JavaScript and shell syntax checks.
+Coverage includes synthetic WFM/NFM/AM IQ, spectrum mapping across the capture
+band, HTTP assets and access checks, settings failures and retries, actual UI
+handler behavior in a DOM stub, and audio buffering in a worklet stub.
 
-Review on September 15, 2026: all five unit tests, both JavaScript syntax checks,
-and the shell syntax check passed. A separate hardware-free HTTP smoke check
-verified asset serving, token injection, state responses, and selected access
-checks. The installed service was inactive; live reception, speaker output, and
-USB reconnection were not verified during this review.
+These checks do not establish physical receiver performance, actual browser
+rendering/audio behavior, USB reconnection, or installed-service operation. The
+new GitHub Actions workflow has been added; a hosted workflow result is not
+claimed here. `rtl_sdr`, suitable USB permissions, and antenna setup remain host
+requirements. There is no published binary release in this source change.
+
+The project includes an **Apache 2.0 license**; see [LICENSE](LICENSE).
 
 ## Hardware requirements
 
@@ -73,7 +73,12 @@ selector for choosing among multiple receivers.
 Spectrum and signal readings are relative **dBFS**, not calibrated dBm. Changing
 frequency, mode, or RF gain restarts the stream and briefly interrupts audio;
 changing squelch does not. Hardware tuning uses a 128 kHz offset above the selected
-channel to move it away from the tuner DC spike.
+channel to move it away from the tuner DC spike. The spectrum uses the actual
+hardware center: its displayed span is the selected frequency minus 384 kHz to
+plus 640 kHz, with the selected-channel marker at 37.5% of the plot width. Spectrum
+labels and click-to-tune use that same physical frequency mapping. Tuning is kept
+in integer hertz; frequency fields and presets show up to six MHz decimal places
+so 12.5 kHz channels retain their exact frequency.
 
 HF direct sampling, SSB, FM stereo, RDS, digital decoding, recording, and scanning
 are not implemented. WFM de-emphasis is fixed at 75 µs, with no 50 µs option.
@@ -82,13 +87,15 @@ are not implemented. WFM de-emphasis is fixed at 75 µs, with no 50 µs option.
 
 - Linux with USB access permissions for the receiver. The existing setup targets
   Ubuntu; the launcher and USB reconnect monitor use Linux-specific facilities.
-- Python 3 with NumPy and SciPy.
+- Python 3.10 or newer with NumPy and SciPy; dependency ranges are in `requirements.txt`.
 - `rtl_sdr` on the server's `PATH`.
 - A browser supporting Web Audio, AudioWorklet, streaming Fetch, and local storage.
-- Node.js only for JavaScript syntax checks.
+- Node.js 22 or newer for development tests and JavaScript syntax checks; not needed for reception.
 
-The review environment used Python 3.12.3, NumPy 2.5.1, and SciPy 1.18.0. These
-are observed versions, not established minimum supported versions.
+The current local verification used Python 3.12.14, NumPy 2.3.5, and SciPy 1.17.0.
+CI is configured for Python 3.10 and 3.12. The dependency file bounds supported
+API families; it is not a lockfile, and every version in those ranges has not
+been individually qualified.
 
 ## Quick start
 
@@ -103,12 +110,19 @@ Connect the receiver and antenna, close other SDR applications using the device,
 and run from this project directory:
 
 ```bash
-OPENBLAS_NUM_THREADS=1 python3 server.py
+./launch.sh
 ```
 
-Open **<http://127.0.0.1:8877>**. The server automatically attempts to start the
-receiver. Run it as your regular user, with write access to the project directory
-so it can save settings. If reception fails, expand **Receiver log**.
+The direct launcher starts the server and opens your default browser. It does
+not depend on an installed systemd service. Use `./launch.sh --no-browser` for a
+terminal-only start, or `OPENBLAS_NUM_THREADS=1 python3 server.py` directly. If
+you create a `.venv` in the project, the launcher uses its Python automatically;
+`NOOELEC_PYTHON` can select a different interpreter.
+
+Open **<http://127.0.0.1:8877>** if the browser does not open. The server
+automatically attempts to start the receiver. Run it as your regular user.
+Settings go into your user configuration directory, so the installed source
+can be read-only. If reception fails, expand **Receiver log**.
 
 ### Listen and tune
 
@@ -133,27 +147,61 @@ It does not find active channels automatically.
 
 Closing the browser does not stop the server or release the USB receiver.
 
-## Existing desktop launcher
+## User-local installation and optional service
 
-The original development machine has a **Nooelec Radio** desktop entry and a
-`nooelec-radio.service` user service installed outside this project directory.
-When that integration is installed:
+For a reusable application-menu entry and `~/.local/bin/nooelec-radio` launcher,
+run from the source checkout:
 
 ```bash
-./launch.sh
+sudo apt install python3-venv rtl-sdr
+./install.sh
+```
+
+The installer copies the application into
+`${XDG_DATA_HOME:-$HOME/.local/share}/nooelec-radio`, creates a Python virtual
+environment there, and installs `requirements.txt` using pip. That initial
+dependency installation needs access to a Python package index. Normal reception
+works offline. The installer itself uses your account, requires no sudo, and
+does not change USB permissions or kernel driver configuration.
+
+If NumPy and SciPy are already installed for system Python, avoid the virtual
+environment and pip step with:
+
+```bash
+./install.sh --system-python
+```
+
+Start the installed application from your applications menu or with:
+
+```bash
+~/.local/bin/nooelec-radio
+```
+
+An optional systemd user service is bundled in `packaging/nooelec-radio.service`.
+To install its unit and reload the user manager, add `--service` to either
+installer command. This does **not** start the service or enable it at login.
+After installation you can explicitly run:
+
+```bash
+systemctl --user start nooelec-radio.service
 systemctl --user status nooelec-radio.service
 systemctl --user stop nooelec-radio.service
 ```
 
-The launcher starts the service and opens Firefox, or falls back to `xdg-open`.
-It does not install the service. The existing service is disabled at login and
-contains an absolute path to the original project directory. On a fresh copy,
-use direct startup above. Run one server instance at a time because the port
-and receiver are shared resources.
+The service runs without opening a browser; visit <http://127.0.0.1:8877>.
+Run one receiver instance at a time. If a service or direct instance is already
+running, open that URL rather than starting a second instance. The service
+requires a working systemd user session; direct startup remains available on
+Linux systems without one.
 
 ## Settings and presets
 
-Receiver settings are saved beside `server.py` in `settings.json`:
+Receiver settings are saved in
+`${XDG_CONFIG_HOME:-$HOME/.config}/nooelec-radio/settings.json`. Set
+`NOOELEC_SETTINGS_FILE` to override this path. On the first start without a user
+settings file, the bundled legacy `settings.json` is read to preserve an existing
+checkout's last-used tuning. Later changes are saved to the user location:
+
 
 ```json
 {
@@ -171,9 +219,14 @@ Receiver settings are saved beside `server.py` in `settings.json`:
 - `squelch`: threshold in dBFS, from −120 to 0 in the backend; the UI exposes
   −120 to −10.
 
-The example shows built-in defaults. The supplied settings file can contain a
-different last-used channel and gain. Stop the server before editing it by hand.
-If absent, defaults apply and the file is created on a settings change.
+The example shows built-in defaults. The bundled legacy file can contain a
+different last-used channel and gain. Stop the server before editing settings by
+hand. Partial objects merge with defaults; malformed or invalid saved settings
+fall back to defaults with a receiver-log diagnostic. A settings file is created
+on a successful settings change. Saves use a temporary file and atomic replace.
+If saving fails, the control request returns a JSON error and leaves both the
+reported configuration and live tuning unchanged; retrying the command remains
+effective.
 
 Presets live in browser local storage under `nooelec-bookmarks`, not in the
 settings file. They belong to that browser profile and URL origin: `localhost`
@@ -190,32 +243,40 @@ Volume resets to 45% on page load. All browser tabs share the receiver's tuning.
 | USB access denied / error −3 | Check udev permissions and your user's access. Reconnect after applying rule changes. |
 | Receiver busy / kernel driver claim | Close other SDR applications and check whether the DVB TV driver claimed the receiver. |
 | Live spectrum but no audio | Enable audio, check browser/system volume, choose the correct mode, and lower squelch. |
-| Service not found from `launch.sh` | The service is not bundled; use direct startup. |
+| Service not found from `systemctl` | Run `./install.sh --service`, or use the direct launcher. |
 | Address already in use | Check for an existing server or user service on port 8877. |
-| Startup `KeyError` after editing settings | Stop the server, back up and remove `settings.json`, then restart with defaults. |
+| Settings ignored and defaults loaded | Check the receiver log and repair the user settings file while the server is stopped. |
+| Settings change reports a save error | Check write access and free space for the user configuration directory; the previous tuning remains active. |
 
 The original machine has `/etc/udev/rules.d/70-nooelec-sdr.rules`, granting
 `plugdev`/`uaccess` access for USB ID `0bda:2838`, and
 `/etc/modprobe.d/nooelec-sdr.conf`, blacklisting `dvb_usb_rtl28xxu`. These files
 are not created by the project. USB setup elsewhere must match the receiver and
-OS. An error mentioning “Nooelec — Enable Receiver” refers to an external setup
-helper that is not included here.
+OS. The application reports USB access or driver ownership errors but does not
+modify privileged host settings automatically.
 
 ## Development and verification
 
 From the project directory:
 
 ```bash
-python3 -m unittest -v test_radio.py
+python3 -m unittest discover -v
+node --test tests/*.test.js
 node --check app.js
+node --check radio-utils.js
 node --check audio-worklet.js
-bash -n launch.sh
+bash -n launch.sh install.sh
 ```
 
-The unit tests generate synthetic IQ to check 1 kHz audio recovery for all three
-modes, output continuity, finite silence output, and selected invalid settings.
-They require NumPy and SciPy but no receiver. They do not establish real-world
-reception quality or browser playback behavior.
+The Python tests require NumPy and SciPy but no receiver. They check 1 kHz audio
+recovery for all three modes, continuity, finite silence output, physical spectrum
+frequency mapping, startup settings recovery, failed-save retries, and real
+loopback HTTP responses. Launcher tests use a fake interpreter and never start a
+receiver or browser. Node tests execute the real tuning handlers in a small DOM
+stub and the real AudioWorklet processor in a worklet stub, including oversized
+packets, buffer wraparound, rapid tuning steps, and exact preset frequencies.
+These checks do not establish real-world reception quality, visual layout, or
+actual browser audio behavior.
 
 For an end-to-end check, attach a receiver, tune a known station, confirm a
 changing spectrum and audible output, exercise mode/gain/squelch controls and
@@ -230,9 +291,15 @@ preset persistence, then verify stop/start and USB reconnection.
 | `app.js` | Tuning, state polling, canvas rendering, presets, and browser audio setup. |
 | `audio-worklet.js` | Buffered mono audio playback. |
 | `style.css` | Interface styling and responsive layout. |
-| `launch.sh` | Starts the externally installed service and opens the browser. |
-| `settings.json` | Last-used receiver settings. |
-| `test_radio.py` | Synthetic DSP and settings-validation tests. |
+| `radio-utils.js` | Integer-hertz tuning and physical spectrum coordinate helpers. |
+| `launch.sh` | Direct startup with an optional browser; does not require a service. |
+| `install.sh` | User-local installation, desktop entry, and optional service setup. |
+| `packaging/nooelec-radio.service` | Optional systemd user service. |
+| `requirements.txt` | Python dependency ranges. |
+| `settings.json` | Legacy settings fallback for first startup. |
+| `test_*.py` | DSP, settings, HTTP, and launcher tests. |
+| `tests/*.test.js` | Tuning-handler and audio-buffer regressions. |
+| `.github/workflows/checks.yml` | Hardware-free Python/Node/shell CI checks. |
 
 The browser polls `/api/state` and receives little-endian float32 PCM from
 `/api/audio`. POST endpoints `/api/start`, `/api/stop`, and `/api/tune` control the

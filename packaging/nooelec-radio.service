@@ -1,0 +1,11 @@
+[Unit]
+Description=Nooelec local RTL-SDR receiver
+
+[Service]
+Type=simple
+ExecStart="%h/.local/bin/nooelec-radio" --no-browser
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

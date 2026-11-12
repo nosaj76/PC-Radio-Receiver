@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from server import Demodulator, Radio, RATE, BLOCK
+from server import Demodulator, Radio, RATE, BLOCK, TUNING_OFFSET
 
 
 class RadioTests(unittest.TestCase):
@@ -45,5 +45,21 @@ class RadioTests(unittest.TestCase):
         for mode in ['WFM', 'NFM', 'AM']:
             _, _, audio = Demodulator(mode).process(bytes([128,128]) * BLOCK)
             self.assertTrue(np.all(np.isfinite(audio)))
+
+    def test_spectrum_preserves_physical_frequency_across_capture_band(self):
+        selected = 99_500_000
+        center = selected + TUNING_OFFSET
+        for offset in (-380_000, -100_000, 0, 128_000, 600_000):
+            with self.subTest(offset=offset):
+                actual = selected + offset
+                n = np.arange(BLOCK)
+                iq = .6 * np.exp(2j * np.pi * (actual - center) / RATE * n)
+                raw = np.empty(BLOCK * 2, dtype=np.uint8)
+                raw[::2] = np.clip(iq.real * 128 + 127.5, 0, 255)
+                raw[1::2] = np.clip(iq.imag * 128 + 127.5, 0, 255)
+                spectrum, _, _ = Demodulator('WFM').process(raw.tobytes())
+                peak = int(np.argmax(spectrum))
+                observed = center + (peak / len(spectrum) - .5) * RATE
+                self.assertAlmostEqual(observed, actual, delta=RATE / len(spectrum) / 2)
 
 if __name__ == '__main__': unittest.main()

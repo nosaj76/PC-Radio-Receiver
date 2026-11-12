@@ -75,6 +75,8 @@
 
 /* Everyday tuning: band dial, clear step buttons, and direct frequency entry. */
 .frequency-section { min-width: 0; }
+#tuneForm { flex-wrap: wrap; }
+#frequency { max-width: 100%; }
 .tune-nav { flex-wrap: wrap; }
 .tune-nav button { width: 38px; height: 30px; font-size: 22px; }
 #tuningBand { max-width: 180px; padding: 5px 7px; }
